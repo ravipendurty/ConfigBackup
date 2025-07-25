@@ -1,0 +1,270 @@
+## Last commit: 2025-07-25 04:38:27 UTC by admin
+version 25.2R1.9;
+system {
+    host-name pe1;
+    root-authentication {
+        encrypted-password "$6$CotwSDJW$tbgHrd9/z6JAExrHZRvE85ZkWGTDamq8lhHR3trFdPbGPSxJG4I.DA.QKWQtmOaQnIAbd.NlrVPTog/SBlRXs/"; ## SECRET-DATA
+    }
+    login {
+        user admin {
+            uid 2000;
+            class super-user;
+            authentication {
+                encrypted-password "$6$x1iS0H/f$YFhkioHjmYEIuscazZ8tHtGiidZ7MtCYrbygehoBV8OJxcxtBcHL5nyEVJyBcM/db5PeInK5HyUjMSzNVirDz."; ## SECRET-DATA
+            }
+        }
+    }
+    services {
+        netconf {
+            ssh;
+        }
+        ssh {
+            root-login allow;
+        }
+    }
+    management-instance;
+    static-host-mapping {
+        pe2 inet 10.0.0.2;
+        h1 inet 172.16.0.3;
+        h2 inet 172.16.1.4;
+    }
+}
+chassis {
+    fpc 0 {
+        pic 0 {
+            number-of-ports 12;
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        mtu 1514;
+        unit 0 {
+            description "pe1 -> h1 [stub]";
+            family inet {
+                address 172.16.0.1/24;
+            }
+        }
+    }
+    ge-0/0/1 {
+        mtu 1514;
+        unit 0 {
+            description "pe1 -> pe2";
+            family inet {
+                address 10.1.0.1/30;
+            }
+            family mpls;
+        }
+    }
+    fxp0 {
+        unit 0 {
+            family inet {
+                address 10.0.0.15/24;
+            }
+            family inet6 {
+                address 2001:db8::2/64;
+            }
+        }
+    }
+    lo0 {
+        unit 0 {
+            family inet {
+                address 10.0.0.1/32;
+            }
+        }
+    }
+}
+policy-options {
+    route-filter-list bgp-announce;
+    policy-statement bgp-advertise {
+        term advertise {
+            from {
+                protocol direct;
+                interface lo0.0;
+            }
+            then {
+                community add x-route-permit-mark;
+                next policy;
+            }
+        }
+        term originate {
+            from {
+                protocol static;
+                route-filter-list bgp-announce;
+            }
+            then {
+                community add x-route-permit-mark;
+                next policy;
+            }
+        }
+    }
+    policy-statement bgp-final {
+        term final-option {
+            from community x-route-permit-mark;
+            then {
+                community delete x-route-permit-mark;
+                accept;
+            }
+        }
+        term default-reject {
+            then reject;
+        }
+    }
+    policy-statement bgp-initial {
+        term initial-cleanup {
+            from community x-route-permit-mark;
+            then {
+                community delete x-route-permit-mark;
+                next policy;
+            }
+        }
+    }
+    policy-statement bgp-redistribute {
+        term redis_bgp {
+            from protocol bgp;
+            then {
+                community add x-route-permit-mark;
+                next policy;
+            }
+        }
+    }
+    policy-statement next-hop-self {
+        term next-hop-self {
+            from route-type external;
+            then {
+                next-hop self;
+            }
+        }
+    }
+    policy-statement vrf-red-bgp-export {
+        term redis_bgp {
+            from protocol bgp;
+            then {
+                community add x-route-permit-mark;
+                next policy;
+            }
+        }
+        term redis_direct {
+            from protocol direct;
+            then {
+                community add x-route-permit-mark;
+                next policy;
+            }
+        }
+        term redis_ospf {
+            from protocol ospf;
+            then {
+                community add x-route-permit-mark;
+                next policy;
+            }
+        }
+        term redis_ospf3 {
+            from protocol ospf3;
+            then {
+                community add x-route-permit-mark;
+                next policy;
+            }
+        }
+    }
+    policy-statement vrf-red-rt-export {
+        term 1 {
+            then {
+                community add tg_65000_1;
+                accept;
+            }
+        }
+    }
+    policy-statement vrf-red-rt-import {
+        term 1 {
+            from community tg_65000_1;
+            then accept;
+        }
+        term default {
+            then reject;
+        }
+    }
+    community tg_65000_1 members target:65000:1;
+    community x-route-permit-mark members large:65535:0:65536;
+}
+routing-instances {
+    mgmt_junos {
+        routing-options {
+            rib mgmt_junos.inet6.0 {
+                static {
+                    route ::/0 next-hop 2001:db8::1;
+                }
+            }
+            static {
+                route 0.0.0.0/0 next-hop 10.0.0.2;
+            }
+        }
+    }
+    red {
+        instance-type vrf;
+        routing-options {
+            router-id 10.0.0.1;
+            autonomous-system 65000;
+            auto-export;
+        }
+        protocols {
+            bgp {
+                group ebgp-peers {
+                    advertise-inactive;
+                    export [ vrf-red-bgp-export bgp-final ];
+                }
+            }
+        }
+        interface ge-0/0/0.0;
+        route-distinguisher 65000:1;
+        vrf-import vrf-red-rt-import;
+        vrf-export vrf-red-rt-export;
+        vrf-table-label;
+    }
+}
+routing-options {
+    router-id 10.0.0.1;
+    autonomous-system 65000;
+}
+protocols {
+    bgp {
+        group ibgp-peers-ipv4 {
+            type internal;
+            advertise-inactive;
+            export [ next-hop-self bgp-advertise bgp-redistribute bgp-final ];
+            neighbor 10.0.0.2 {
+                description pe2;
+                local-address 10.0.0.1;
+                family inet {
+                    unicast;
+                }
+                family inet-vpn {
+                    unicast;
+                }
+            }
+        }
+        group ebgp-peers {
+            advertise-inactive;
+            export [ bgp-advertise bgp-redistribute bgp-final ];
+        }
+    }
+    ldp {
+        interface ge-0/0/1.0;
+    }
+    mpls {
+        interface ge-0/0/1.0;
+    }
+    ospf {
+        area 0.0.0.0 {
+            interface lo0.0;
+            interface ge-0/0/1.0 {
+                interface-type p2p;
+            }
+        }
+    }
+    lldp {
+        interface fxp0 {
+            disable;
+        }
+        interface all;
+    }
+}
